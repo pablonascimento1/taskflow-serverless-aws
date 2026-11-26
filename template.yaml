@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  TaskFlow - Projeto final de Sistemas Distribuidos (UFERSA).
+  Apresentacao: Amplify | Negocios: API Gateway + Lambda | Dados: DynamoDB |
+  Autenticacao: Cognito | DNS: Route 53
+
+Parameters:
+  ApiDomainName:
+    Type: String
+    Default: ''
+    Description: Dominio da API (ex. api.pablo.grupo-02.sd.ufersa.dev.br). Vazio = sem dominio proprio.
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: ID da hosted zone do Route 53 (pablo.grupo-02.sd.ufersa.dev.br).
+  CreateAmplifyApp:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+
+Conditions:
+  HasDomain: !And
+    - !Not [!Equals [!Ref ApiDomainName, '']]
+    - !Not [!Equals [!Ref HostedZoneId, '']]
+  HasAmplify: !Equals [!Ref CreateAmplifyApp, 'true']
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    CodeUri: src/
+    Timeout: 10
+    MemorySize: 256
+# Obs.: no AWS Academy Learner Lab nao e possivel criar roles; cada funcao usa a LabRole existente.
+
+Resources:
+  # =====================================================================
+  # CAMADA DE DADOS
+  # =====================================================================
+  TasksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: taskflow-tasks
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: id, AttributeType: S }
+        - { AttributeName: userId, AttributeType: S }
+        - { AttributeName: createdAt, AttributeType: S }
+      KeySchema:
+        - { AttributeName: id, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        # Permite buscar rapidamente "todas as tarefas do usuario X"
+        - IndexName: byUser
+          KeySchema:
+            - { AttributeName: userId, KeyType: HASH }
+            - { AttributeName: createdAt, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+
+  # =====================================================================
+  # AUTENTICACAO (Cognito)
+  # =====================================================================
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: taskflow-users
+      UsernameAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireUppercase: false
+          RequireSymbols: false
+      Schema:
+        - { Name: name, AttributeDataType: String, Mutable: true, Required: true }
+        - { Name: email, AttributeDataType: String, Mutable: true, Required: true }
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignUpFunction.Arn
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: taskflow-web
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: admin
+      Description: Administradores do TaskFlow (veem todas as tarefas e gerenciam usuarios)
+      UserPoolId: !Ref UserPool
+
+  # Confirma automaticamente novos cadastros (sem precisar de codigo por e-mail)
+  PreSignUpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: taskflow-presignup
+      Handler: presignup.handler
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/LabRole
+
+  PreSignUpPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt PreSignUpFunction.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  # =====================================================================
+  # CAMADA DE NEGOCIOS (API Gateway REST + Lambda)
+  # =====================================================================
+  TaskFlowApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: taskflow-api
+      StageName: prod
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowMethods: "'GET,POST,PATCH,DELETE,OPTIONS'"
+      Auth:
+        # Toda rota exige um token valido do Cognito, salvo as marcadas com Authorizer: NONE
+        DefaultAuthorizer: CognitoAuth
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          CognitoAuth:
+            UserPoolArn: !GetAtt UserPool.Arn
+      GatewayResponses:
+        # Garante cabecalhos CORS tambem nas respostas 401/403 geradas pelo proprio Gateway
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+
+  PublicFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: taskflow-public
+      Handler: public.handler
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/LabRole
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TasksTable
+      Events:
+        Root:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: /, Method: GET, Auth: { Authorizer: NONE } }
+        Health:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: /health, Method: GET, Auth: { Authorizer: NONE } }
+
+  TasksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: taskflow-tasks
+      Handler: tasks.handler
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/LabRole
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TasksTable
+      Events:
+        ListTasks:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: /tasks, Method: GET }
+        CreateTask:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: /tasks, Method: POST }
+        GetTask:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: '/tasks/{id}', Method: GET }
+        UpdateTask:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: '/tasks/{id}', Method: PATCH }
+        DeleteTask:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: '/tasks/{id}', Method: DELETE }
+
+  UsersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: taskflow-users
+      Handler: users.handler
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/LabRole
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref TasksTable
+          USER_POOL_ID: !Ref UserPool
+      Events:
+        Me:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: /users/me, Method: GET }
+        ListUsers:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: /users, Method: GET }
+        UpdateUser:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: '/users/{id}', Method: PATCH }
+        DeleteUser:
+          Type: Api
+          Properties: { RestApiId: !Ref TaskFlowApi, Path: '/users/{id}', Method: DELETE }
+
+  # =====================================================================
+  # DNS: api.pablo.grupo-02.sd.ufersa.dev.br -> API Gateway (HTTPS)
+  # =====================================================================
+  ApiCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: HasDomain
+    Properties:
+      DomainName: !Ref ApiDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref ApiDomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  ApiCustomDomain:
+    Type: AWS::ApiGateway::DomainName
+    Condition: HasDomain
+    Properties:
+      DomainName: !Ref ApiDomainName
+      RegionalCertificateArn: !Ref ApiCertificate
+      EndpointConfiguration: { Types: [REGIONAL] }
+      SecurityPolicy: TLS_1_2
+
+  ApiBasePathMapping:
+    Type: AWS::ApiGateway::BasePathMapping
+    Condition: HasDomain
+    Properties:
+      DomainName: !Ref ApiCustomDomain
+      RestApiId: !Ref TaskFlowApi
+      Stage: !Ref TaskFlowApi.Stage
+
+  ApiDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref ApiDomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApiCustomDomain.RegionalDomainName
+        HostedZoneId: !GetAtt ApiCustomDomain.RegionalHostedZoneId
+
+  # =====================================================================
+  # CAMADA DE APRESENTACAO (Amplify Hosting)
+  # =====================================================================
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Condition: HasAmplify
+    Properties:
+      Name: taskflow-web
+      Platform: WEB
+
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Condition: HasAmplify
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      BranchName: main
+      Stage: PRODUCTION
+
+Outputs:
+  Region:
+    Value: !Ref AWS::Region
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  TableName:
+    Value: !Ref TasksTable
+  ApiDefaultUrl:
+    Description: URL padrao do API Gateway (funciona mesmo sem DNS)
+    Value: !Sub https://${TaskFlowApi}.execute-api.${AWS::Region}.amazonaws.com/prod
+  ApiCustomUrl:
+    Condition: HasDomain
+    Value: !Sub https://${ApiDomainName}
+  AmplifyAppId:
+    Condition: HasAmplify
+    Value: !GetAtt AmplifyApp.AppId
+  AmplifyDefaultUrl:
+    Condition: HasAmplify
+    Value: !Sub https://main.${AmplifyApp.DefaultDomain}

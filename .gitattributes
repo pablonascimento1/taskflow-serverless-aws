@@ -1,0 +1,4 @@
+# Mantém quebras de linha LF (scripts .sh quebram no Linux/CloudShell com CRLF)
+* text=auto eol=lf
+*.png binary
+*.jpg binary

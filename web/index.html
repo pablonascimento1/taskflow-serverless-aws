@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TaskFlow</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">TaskFlow <small>Projeto Final · Sistemas Distribuídos</small></div>
+    <div id="session" class="session hidden">
+      <span id="who"></span>
+      <span id="role-badge" class="badge"></span>
+      <button id="logout" class="ghost">Sair</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- LOGIN / CADASTRO -->
+    <section id="auth-view" class="card auth hidden">
+      <div class="tabs">
+        <button data-tab="login" class="tab active">Entrar</button>
+        <button data-tab="register" class="tab">Cadastrar</button>
+      </div>
+
+      <form id="login-form" class="stack">
+        <label>E-mail <input name="email" type="email" required autocomplete="username"></label>
+        <label>Senha <input name="password" type="password" required autocomplete="current-password"></label>
+        <button type="submit">Entrar</button>
+      </form>
+
+      <form id="register-form" class="stack hidden">
+        <label>Nome <input name="name" required></label>
+        <label>E-mail <input name="email" type="email" required autocomplete="username"></label>
+        <label>Senha <input name="password" type="password" minlength="8" required autocomplete="new-password"></label>
+        <small class="muted">Mínimo 8 caracteres, com letras minúsculas e números.</small>
+        <button type="submit">Criar conta</button>
+      </form>
+      <p id="auth-error" class="error"></p>
+    </section>
+
+    <!-- APLICAÇÃO -->
+    <section id="app-view" class="hidden">
+      <div class="card">
+        <h2>Nova tarefa</h2>
+        <form id="task-form" class="row">
+          <input name="title" placeholder="Título" required>
+          <input name="description" placeholder="Descrição (opcional)">
+          <button type="submit">Adicionar</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2 id="tasks-title">Minhas tarefas</h2>
+          <select id="status-filter">
+            <option value="">Todos os status</option>
+            <option value="pendente">Pendente</option>
+            <option value="em_andamento">Em andamento</option>
+            <option value="concluida">Concluída</option>
+          </select>
+        </div>
+        <ul id="task-list" class="tasks"></ul>
+        <p id="task-empty" class="muted hidden">Nenhuma tarefa por aqui.</p>
+      </div>
+
+      <div id="admin-panel" class="card hidden">
+        <h2>Usuários <span class="badge admin">admin</span></h2>
+        <p class="muted">Usuários e papéis vêm do Amazon Cognito. Mudança de papel vale no próximo login do usuário.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>ID</th><th>Nome</th><th>E-mail</th><th>Tarefas</th><th>Papel</th><th></th></tr></thead>
+            <tbody id="user-rows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- LOG DE CHAMADAS À API (útil na apresentação) -->
+    <section class="card log">
+      <div class="card-head">
+        <h2>Chamadas à API</h2>
+        <code id="api-url"></code>
+      </div>
+      <ul id="api-log"></ul>
+    </section>
+  </main>
+
+  <p id="toast" class="toast"></p>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

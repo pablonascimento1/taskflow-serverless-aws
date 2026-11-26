@@ -1,0 +1,6 @@
+node_modules/
+.env
+taskflow.zip
+.aws-sam/
+samconfig.toml
+docs/apresentacao.md
